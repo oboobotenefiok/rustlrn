@@ -6,15 +6,15 @@ Welcome! This repository documents my journey of learning the Rust programming l
 
 ## Folder Structure
 
-- `TOPICS/(Topic)/README.md`: Deep dives into specific Rust concepts (Ownership, Borrowing, etc.).
-- `TOPICS/(Topic)/snippets/`: Runnable code examples related to each topic.
-- `TOPICS/SETTING-UP/cargo_setup.md`: A guide on how to get started with Cargo.
+- `src/TOPICS/(Topic)/README.md`: Deep dives into specific Rust concepts (Ownership, Borrowing, etc.).
+- `src/TOPICS/(Topic)/snippets/`: Runnable code examples related to each topic.
+- `src/TOPICS/SETTING-UP/cargo_setup.md`: A guide on how to get started with Cargo.
 
 I ADVISE YOU READ THE TOPICS IN THE ORDER IN WHICH THEY ARE NUMBERED.
 ## Current Topics
 
-1. [Setting-Up](TOPICS/1_Setting-Up)
-2. [Ownership & Memory Management](TOPICS/2_Ownership)
+1. [Setting-Up](/src/TOPICS/1_Setting-Up)
+2. [Ownership & Memory Management](/src/TOPICS/2_Ownership)
 
 ## Contributors
 
