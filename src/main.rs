@@ -6,7 +6,8 @@
 /* */ 
 // <--And That One Above Is Multi-line comment
 
-
+mod ui;  // Import the UI module
+mod lessons;
 // You must declare the type of constants, and also best practice to keep it capital.
 // My major use case for constants is for source of truth otherwise you'll almost NEVER see me use it.
 // Quick one is, you cannot use the to_string() or  string::from("") on CONST cause of compile time needs. We'll use &str.
@@ -34,7 +35,7 @@ use colored::Colorize;
 // We bring it in because it is not in the PRELUDE exposed by the compiler.
 
 // A PRELUDE is the ATMOSPHERE of the compiler you are experiencing right now. If you still don't understand that, come back to this comment in future.
-use std::io::{self, Write};
+use std::io::{self};
 // This derive gave me headache
 
 /// Trait for clap needs derive to be implemented for certain stuff. Be sure to keep an eye at Cargo.toml.
@@ -50,9 +51,9 @@ struct Cli {
 
 fn main() {
     let cli = Cli::parse();
-
+	use crate::lessons;
     let lessons = [
-        "Lesson 1: Hello World - print!(\"Hello, world!\")",
+        lessons::ownership::obot(),
         "Lesson 2: Variables - let x = 5;",
         "Lesson 3: Functions - fn add(a: i32, b: i32) -> i32 { a + b }",
         "Lesson 4: If/Else - if x > 0 { println!(\"Positive\"); }",
@@ -64,15 +65,15 @@ fn main() {
 
 // I don't know how long we'll keep this loop but this will be like the main place we keep users while in the app... The app will be a loop basically.
     loop {
-        clear_screen(); // We clear screen each time the loop begins. So far, it's not any noticeable if the screen flickered and seeing that we will be working with just text, I don't even see that coming.
+        ui::clear_screen(); // We clear screen each time the loop begins. So far, it's not any noticeable if the screen flickered and seeing that we will be working with just text, I don't even see that coming.
         // I can perceive a very crazy state machine being built inside this loop in future but let's see.
-        println!("{}", NAME.cyan().bold());
-        println!("{}\n", lessons[current]);
-        println!("{}", "Press 'n' for next, 'p' for previous, 'q' to quit".bold().green());
+        ui::show_header();
+        ui::show_lesson(lessons[current]);
+        ui::show_controls();
 
         let warn = warn_count > 0;
         if warn {
-            eprintln!("{}", "Please type a valid input".red().bold());
+            ui::show_error("Please type a valid input");
             warn_count = 0;
         }
 
@@ -103,17 +104,4 @@ fn main() {
             }
         }
     }
-}
-
-#[cfg(target_os = "windows")]
-fn clear_screen() {
-    std::process::Command::new("cmd")
-        .args(&["/c", "cls"])
-        .status()
-        .unwrap();
-}
-
-#[cfg(not(target_os = "windows"))]
-fn clear_screen() {
-    std::process::Command::new("clear").status().unwrap();
 }
