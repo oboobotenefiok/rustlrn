@@ -1,8 +1,8 @@
 use crate::NAME;
 use colored::Colorize;
 use crate::executor;
+use crate::config;
 
-// 1. The clear_screen function (both versions)
 #[cfg(target_os = "windows")]
 fn clear_screen() {
     std::process::Command::new("cmd")
@@ -16,51 +16,126 @@ pub fn clear_screen() {
     std::process::Command::new("clear").status().unwrap();
 }
 
-// 2. Display functions to reduce repetitions and a subtle attempt at states.
 pub fn show_header() {
     println!("{}", NAME.cyan().bold());
     println!("{}", "-".repeat(40).cyan());
 }
 
+/// Edit a code block using the configured system editor
+pub fn edit_code_with_editor(code: &str, block_num: usize, config: &config::Config) -> Result<String, String> {
+    use std::fs;
+    use std::process::Command;
+    use tempfile::NamedTempFile;
+    use std::io::Write;
+    
+    // Check if editor is configured
+    let editor_cmd = match &config.editor {
+        Some(cmd) => cmd,
+        None => {
+            return Err(
+                "No editor configured!\n\n\
+                 Please set your editor with: rustlrn editor <command>\n\
+                 Examples:\n\
+                   rustlrn editor nano\n\
+                   rustlrn editor micro\n\
+                   rustlrn editor vim\n\
+                   rustlrn editor \"code --wait\"\n\
+                   rustlrn editor \"subl -w\""
+                .to_string()
+            );
+        }
+    };
+    
+    // Create a temporary file with .rs extension for syntax highlighting
+    let mut temp_file = NamedTempFile::new()
+        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+    
+    // Write the code to the temp file
+    if !code.is_empty() {
+        write!(temp_file, "{}", code)
+            .map_err(|e| format!("Failed to write code to temp file: {}", e))?;
+        temp_file.flush()
+            .map_err(|e| format!("Failed to flush temp file: {}", e))?;
+    }
+    
+    let temp_path = temp_file.path().to_path_buf();
+    let temp_path_display = temp_path.display();
+    
+    let block_label = if block_num > 0 {
+        format!("block #{}", block_num)
+    } else {
+        "free-form".to_string()
+    };
+    
+    println!("\n{} Opening editor for {}...", "[info]".blue().bold(), block_label);
+    println!("{} Editor: {}", "[editor]".cyan().bold(), editor_cmd.cyan());
+    println!("{} Edit the code, save, and close the editor.", "[hint]".yellow().bold());
+    println!("{} Press any key to continue after closing the editor...", "[enter]".dimmed());
+    
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).unwrap();
+    
+    // Parse the editor command (supports arguments like "code --wait")
+    let cmd_parts: Vec<&str> = editor_cmd.split_whitespace().collect();
+    let editor_cmd_base = cmd_parts[0];
+    let editor_args = &cmd_parts[1..];
+    
+    // Open the editor
+    let status = Command::new(editor_cmd_base)
+        .args(editor_args)
+        .arg(&temp_path)
+        .status()
+        .map_err(|e| format!("Failed to open editor '{}': {}", editor_cmd, e))?;
+    
+    if !status.success() {
+        return Err(format!("Editor exited with error"));
+    }
+    
+    // Read the edited code
+    let edited_code = fs::read_to_string(&temp_path)
+        .map_err(|e| format!("Failed to read edited code: {}", e))?;
+    
+    // Check if the file is empty or only whitespace
+    if edited_code.trim().is_empty() {
+        return Err("No code entered".to_string());
+    }
+    
+    Ok(edited_code)
+}
+
 /// Display a lesson with interactive code execution
-///
-/// This function now detects code blocks and offers execution options.
-/// Users can run code snippets directly from the lesson view.
 pub fn show_lesson(content: &str) {
-    // Extract all code blocks for potential execution
     let code_blocks = executor::extract_code_blocks(content);
     let mut block_index = 0;
 
-    // Process content line by line to style specific patterns
     let mut in_code_block = false;
     let mut code_buffer: Vec<String> = Vec::new();
 
     for line in content.lines() {
         let trimmed = line.trim();
 
-        // Skip empty lines but print them for spacing
         if trimmed.is_empty() {
             println!();
             continue;
         }
 
-        // Detect code block markers
         if trimmed.starts_with("```") {
             if in_code_block && !code_buffer.is_empty() {
-                // Display code block with run hint
                 let code_text = code_buffer.join("\n");
+                let block_num = block_index + 1;
+                
                 println!("{}", "  ┌─ Code Block ─────────────".dimmed());
                 for code_line in code_buffer.iter() {
                     println!("  │ {}", code_line.dimmed());
                 }
                 println!("{}", "  └─────────────────────────".dimmed());
 
-                // Show run option if this block has a main function or we can wrap it
                 let has_main = executor::has_main_function(&code_text);
                 if has_main || code_text.contains("println!") {
-                    let block_num = block_index + 1;
                     println!("  {} Run this code? Press 'r{}'", "[r]".green().bold(), block_num);
                 }
+                println!("  {} Edit this code? Press 'ed{}'", "[ed]".cyan().bold(), block_num);
+                println!("  {} Reset to original? Press 'z{}'", "[z]".red().bold(), block_num);
 
                 block_index += 1;
                 code_buffer.clear();
@@ -71,12 +146,10 @@ pub fn show_lesson(content: &str) {
         }
 
         if in_code_block {
-            // Collect code lines for later display
             code_buffer.push(line.to_string());
             continue;
         }
 
-        // Detect section headers (ALL CAPS with dashes or colons)
         if trimmed.chars().all(|c| c.is_uppercase() || c.is_whitespace() || c == ':' || c == '•' || c == '━' || c == '═')
             && trimmed.len() > 3 
             && !trimmed.starts_with("TIP")
@@ -84,7 +157,6 @@ pub fn show_lesson(content: &str) {
             && !trimmed.starts_with("Based on")
             && !trimmed.starts_with("*Credit")
         {
-            // UPPERCASE = header
             println!("{}\n", trimmed.yellow().bold());
         } else if trimmed.starts_with("TIP:") {
             println!("{}", trimmed.green().bold());
@@ -97,22 +169,20 @@ pub fn show_lesson(content: &str) {
         } else if trimmed.starts_with("Example:") || trimmed.starts_with("LOCAL VARIABLE SCOPE:") || trimmed.starts_with("STACK vs. HEAP:") {
             println!("\n{}", trimmed.cyan().bold());
         } else if trimmed.starts_with("fn main()") || trimmed.starts_with("fn status()") || trimmed.starts_with("let") {
-            // Code snippets - display in dim
             println!("  {}", trimmed.dimmed());
         } else if trimmed.contains("ERROR!") {
             println!("  {}", trimmed.red().bold());
         } else if trimmed.starts_with("===") || trimmed.starts_with("━━━") {
-            // Decorative lines - dim
             println!("{}", trimmed.dimmed());
         } else {
-            // Regular text
             println!("{}", trimmed);
         }
     }
 
-    // Handle any remaining code block
     if !code_buffer.is_empty() {
         let code_text = code_buffer.join("\n");
+        let block_num = block_index + 1;
+        
         println!("{}", "  ┌─ Code Block ─────────────".dimmed());
         for code_line in code_buffer.iter() {
             println!("  │ {}", code_line.dimmed());
@@ -121,31 +191,41 @@ pub fn show_lesson(content: &str) {
 
         let has_main = executor::has_main_function(&code_text);
         if has_main || code_text.contains("println!") {
-            let block_num = block_index + 1;
             println!("  {} Run this code? Press 'r{}'", "[r]".green().bold(), block_num);
         }
+        println!("  {} Edit this code? Press 'ed{}'", "[ed]".cyan().bold(), block_num);
+        println!("  {} Reset to original? Press 'z{}'", "[z]".red().bold(), block_num);
     }
 }
 
-/// Display controls including execution commands
 pub fn show_controls() {
     println!();
     println!("{}", "-".repeat(40).dimmed());
     println!(
-        "{} {}  {} {}  {} {}  {} {}",
+        "{} {}  {} {}  {} {}  {} {}  {} {}  {} {}",
         "[n]".green().bold(),
         "next".dimmed(),
         "[p]".yellow().bold(),
         "previous".dimmed(),
-        "[r#]".cyan().bold(),
-        "run block #".dimmed(),
+        "[r#]".magenta().bold(),
+        "run".dimmed(),
+        "[ed#]".cyan().bold(),
+        "edit".dimmed(),
+        "[z#]".red().bold(),
+        "reset".dimmed(),
         "[q]".red().bold(),
         "quit".dimmed()
     );
+    
+    // Show warning if no editor configured
+    let config = config::load_config();
+    if config.editor.is_none() {
+        println!("{} No editor set. Run: rustlrn editor <command>", "[!]".yellow().bold());
+    }
+    
     println!();
 }
 
-/// Show execution results
 pub fn show_execution_result(result: &executor::ExecutionResult, _code: &str) {
     println!();
     println!("{}", "═".repeat(40).cyan());

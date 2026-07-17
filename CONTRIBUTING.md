@@ -16,4 +16,4 @@ We value every contribution. All contributors will be listed in the [README.md](
 
 
 ### Caveat 
-Except otherwise stated, all contributions made to this project fall under ANY of the licences.
+Except otherwise proposed, all contributions made to this project fall under ANY of the licences.
