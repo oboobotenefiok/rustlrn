@@ -30,7 +30,7 @@ or a reference. In Rust, for types that store data on the HEAP (like String),
 assigning one variable to another MOVES the ownership.
 
 Example:
-
+```rust
     fn main() {
         let indie_hacker = String::from("Caleb");  // indie_hacker OWNS the string
         
@@ -41,7 +41,7 @@ Example:
         
         println!("New owner is: {}", underdog_builder);
     }
-
+```
 TIP: To "fix" a move, use .clone() to create a deep copy of the heap data.
     This gives you a second independent owner. Be careful--cloning heap data 
     can be expensive!
@@ -57,12 +57,13 @@ Variables are only accessible within the block {} they are defined in.
 Once the block ends, the variable is "dropped" (freed from memory).
 
 LOCAL VARIABLE SCOPE:
-
+```rust
     fn status() {
         let indie_hacker = String::from("Caleb");  // local to status()
         // indie_hacker exists here
     } 
     // indie_hacker is DROPPED here. It cannot be accessed outside.
+```
 
 LIFETIME OF A VARIABLE:
     The lifetime of a variable is the duration for which it exists in memory.
@@ -83,11 +84,11 @@ Rust behaves differently depending on where data is stored:
      Simple values with a known size at compile time are stored on the STACK.
 
 Example:
-
+```rust
     let x = "Caleb";  // Stack literal
     let y = x;        // Copied, not moved. Both are valid.
     println!("{} and {}", x, y);  // Works fine!
-
+```
 
 KEY TAKEAWAYS
 
