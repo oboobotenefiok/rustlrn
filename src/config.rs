@@ -57,6 +57,14 @@ pub fn load_config() -> Config {
 
 /// Save configuration to file
 pub fn save_config(config: &Config) {
+    // Validate editor exists before saving
+    if let Some(ref editor) = config.editor {
+        if !validate_editor(editor) {
+            eprintln!("Warning: Editor '{}' not found in PATH", editor);
+            eprintln!("This may cause issues when editing code blocks.");
+        }
+    }
+
     let path = config_path();
 
     if let Some(parent) = path.parent() {

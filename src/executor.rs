@@ -154,7 +154,7 @@ pub fn extract_code_blocks(content: &str) -> Vec<String> {
         }
 
         if in_code {
-            // Skip rust annotation line if present
+            // Skip language annotation lines
             if !trimmed.starts_with("```") && trimmed != "rust" && !trimmed.starts_with("//") {
                 if !current_block.is_empty() {
                     current_block.push('\n');
