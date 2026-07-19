@@ -3,28 +3,27 @@
 //  //! means comment on this file(module)
 //  /// means documentation comment
 // Well, just an inline
-/* */ 
+/* */
 // <--And That One Above Is Multi-line comment
 
-mod ui;  // Import the UI module and his brothers.
-mod lessons;
-mod executor;
 mod config;
+mod executor;
+mod lessons;
+mod ui; // Import the UI module and his brothers.
 
 // You must declare the type of constants, and also best practice to keep it capital.
 // My major use case for constants is for source of truth otherwise you'll almost NEVER see me use it.
 // Quick one is, you cannot use the to_string() or  string::from("") on CONST cause of compile time needs. We'll use &str.
 
 // JUST KNOW THAT HEAP ALLOCATION CAN'T HAPPEN AT COMPILE TIME.
-const NAME:&str = "rustlrn";
+const NAME: &str = "rustlrn";
 /* Spectra, Obot here... feel we can make this a CLI tool for learning Rust so I'll add actual stuff to main and we can iterate from there. Think it will be cool that way? I'm not versed in the contribution culture but for now this comment should be fine :-) We can learn a lot from implementing this and fuse it to an app or web later when we understand better...*/
-
 
 // That reminds me, this binary will handroll its own interface. and many other features.
 use clap::{Parser, Subcommand};
 
-/// In the last one I used 
-/// `use colored::*` 
+/// In the last one I used
+/// `use colored::*`
 // But that led to errors. I had to change it to Colorize. Note that it begins with capital C
 use colored::Colorize;
 /// The main function will basically be kept as empty as possible and we'll route several things to other modules.
@@ -51,7 +50,7 @@ use std::io::Write;
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
-    
+
     /// Starting lesson number (1-5)
     #[arg(short, long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=5))]
     lesson: u8, // short means we can pass 'l' but can't add short for any other subcommand.
@@ -68,7 +67,7 @@ enum Commands {
 
 fn main() {
     let cli = Cli::parse();
-    
+
     // Handle subcommands
     if let Some(command) = cli.command {
         match command {
@@ -78,13 +77,13 @@ fn main() {
             }
         }
     }
-    
+
     // Load config
     let config = config::load_config();
-    
+
     use crate::lessons;
     let lessons = [
-        lessons::ownership::obot(),
+        lessons::intermediate::ownership::obot(),
         "Lesson 2: Variables - let x = 5;",
         "Lesson 3: Functions - fn add(a: i32, b: i32) -> i32 { a + b }",
         "Lesson 4: If/Else - if x > 0 { println!(\"Positive\"); }",
@@ -93,7 +92,7 @@ fn main() {
 
     let mut current = (cli.lesson - 1) as usize;
     let mut warn_count = 0;
-    
+
     // Track edited code blocks
     use std::collections::HashMap;
     let mut edited_blocks: HashMap<(usize, usize), String> = HashMap::new();
@@ -115,7 +114,7 @@ fn main() {
         io::stdout().flush().unwrap();
         io::stdin().read_line(&mut input).unwrap();
         let input_trimmed = input.trim();
-        
+
         let next = current < lessons.len() - 1;
         let previous = current > 0;
 
@@ -143,24 +142,32 @@ fn main() {
                     if block_num > 0 && block_num <= cached_blocks.len() {
                         let block_idx = block_num - 1;
                         let key = (current, block_idx);
-                        
+
                         // Get the current code (either original or edited)
-                        let current_code = edited_blocks.get(&key)
+                        let current_code = edited_blocks
+                            .get(&key)
                             .unwrap_or(&cached_blocks[block_idx])
                             .clone();
-                        
+
                         // Try to edit with the configured editor
                         match ui::edit_code_with_editor(&current_code, block_num, &config) {
                             Ok(edited_code) => {
                                 if edited_code != current_code && !edited_code.trim().is_empty() {
                                     edited_blocks.insert(key, edited_code.clone());
-                                    println!("{} Code block #{} updated!", "[✓]".green().bold(), block_num);
-                                    
+                                    println!(
+                                        "{} Code block #{} updated!",
+                                        "[✓]".green().bold(),
+                                        block_num
+                                    );
+
                                     // Auto-execute with retry on error
                                     handle_code_execution(&edited_code);
                                 } else {
                                     println!("{} No changes made", "[info]".blue().bold());
-                                    println!("\n{} Press any key to continue...", "[enter]".dimmed());
+                                    println!(
+                                        "\n{} Press any key to continue...",
+                                        "[enter]".dimmed()
+                                    );
                                     let mut temp = String::new();
                                     io::stdin().read_line(&mut temp).unwrap();
                                 }
@@ -180,39 +187,45 @@ fn main() {
                 }
             }
             // Free-form code editing mode: ed0
-            "ed0" => {
-                match ui::edit_code_with_editor("", 0, &config) {
-                    Ok(code) => {
-                        if !code.trim().is_empty() {
-                            handle_code_execution(&code);
-                        } else {
-                            println!("{} No code entered", "[info]".blue().bold());
-                            println!("\n{} Press any key to continue...", "[enter]".dimmed());
-                            let mut temp = String::new();
-                            io::stdin().read_line(&mut temp).unwrap();
-                        }
-                    }
-                    Err(e) => {
-                        ui::show_error(&format!("Edit failed: {}", e));
+            "ed0" => match ui::edit_code_with_editor("", 0, &config) {
+                Ok(code) => {
+                    if !code.trim().is_empty() {
+                        handle_code_execution(&code);
+                    } else {
+                        println!("{} No code entered", "[info]".blue().bold());
                         println!("\n{} Press any key to continue...", "[enter]".dimmed());
                         let mut temp = String::new();
                         io::stdin().read_line(&mut temp).unwrap();
                     }
                 }
-            }
+                Err(e) => {
+                    ui::show_error(&format!("Edit failed: {}", e));
+                    println!("\n{} Press any key to continue...", "[enter]".dimmed());
+                    let mut temp = String::new();
+                    io::stdin().read_line(&mut temp).unwrap();
+                }
+            },
             // Reset command: z1, z2, z3, etc.
             cmd if cmd.starts_with('z') && cmd.len() > 1 => {
                 if let Ok(block_num) = cmd[1..].parse::<usize>() {
                     if block_num > 0 && block_num <= cached_blocks.len() {
                         let block_idx = block_num - 1;
                         let key = (current, block_idx);
-                        
+
                         if edited_blocks.remove(&key).is_some() {
-                            println!("{} Reset code block #{} to original", "[✓]".green().bold(), block_num);
+                            println!(
+                                "{} Reset code block #{} to original",
+                                "[✓]".green().bold(),
+                                block_num
+                            );
                         } else {
-                            println!("{} Code block #{} was not modified", "[info]".blue().bold(), block_num);
+                            println!(
+                                "{} Code block #{} was not modified",
+                                "[info]".blue().bold(),
+                                block_num
+                            );
                         }
-                        
+
                         println!("\n{} Press any key to continue...", "[enter]".dimmed());
                         let mut temp = String::new();
                         io::stdin().read_line(&mut temp).unwrap();
@@ -229,9 +242,8 @@ fn main() {
                     if block_num > 0 && block_num <= cached_blocks.len() {
                         let block_idx = block_num - 1;
                         let key = (current, block_idx);
-                        
-                        let code = edited_blocks.get(&key)
-                            .unwrap_or(&cached_blocks[block_idx]);
+
+                        let code = edited_blocks.get(&key).unwrap_or(&cached_blocks[block_idx]);
 
                         let executable_code = executor::ensure_main_wrapper(code);
                         let result = executor::execute_code(&executable_code);
@@ -245,19 +257,34 @@ fn main() {
             }
             "r" => {
                 println!("\n{} Commands:", "[help]".yellow().bold());
-                println!("  {} r1, r2, r3    - Run specific code block", "[r#]".cyan().bold());
-                println!("  {} ed1, ed2, ed3 - Edit specific code block", "[ed#]".green().bold());
-                println!("  {} ed0           - Write code from scratch", "[ed0]".green().bold());
-                println!("  {} z1, z2, z3    - Reset specific code block", "[z#]".red().bold());
-                
+                println!(
+                    "  {} r1, r2, r3    - Run specific code block",
+                    "[r#]".cyan().bold()
+                );
+                println!(
+                    "  {} ed1, ed2, ed3 - Edit specific code block",
+                    "[ed#]".green().bold()
+                );
+                println!(
+                    "  {} ed0           - Write code from scratch",
+                    "[ed0]".green().bold()
+                );
+                println!(
+                    "  {} z1, z2, z3    - Reset specific code block",
+                    "[z#]".red().bold()
+                );
+
                 // Check if editor is configured
                 let cfg = config::load_config();
                 if cfg.editor.is_none() {
                     println!("\n{} No editor configured!", "[warn]".yellow().bold());
-                    println!("  {} Set editor: rustlrn editor <command>", "[setup]".cyan().bold());
+                    println!(
+                        "  {} Set editor: rustlrn editor <command>",
+                        "[setup]".cyan().bold()
+                    );
                     println!("  {} Example: rustlrn editor nano", "[example]".dimmed());
                 }
-                
+
                 println!("{} Press any key to continue...", "[enter]".dimmed());
                 let mut temp = String::new();
                 io::stdin().read_line(&mut temp).unwrap();
@@ -273,8 +300,12 @@ fn main() {
 
 /// Handle the editor configuration command
 fn handle_editor_command(command: &str) {
-    println!("{} Setting editor to: {}", "[config]".cyan().bold(), command.cyan());
-    
+    println!(
+        "{} Setting editor to: {}",
+        "[config]".cyan().bold(),
+        command.cyan()
+    );
+
     // Validate the editor
     if !config::validate_editor(command) {
         println!(
@@ -282,9 +313,12 @@ fn handle_editor_command(command: &str) {
             "[warn]".yellow().bold(),
             command.split_whitespace().next().unwrap_or(command)
         );
-        println!("{} You can still proceed, but the editor may not work.", "[info]".blue().bold());
+        println!(
+            "{} You can still proceed, but the editor may not work.",
+            "[info]".blue().bold()
+        );
     }
-    
+
     // Check if it's a non-blocking GUI editor
     if !config::is_blocking_editor(command) {
         println!(
@@ -292,14 +326,20 @@ fn handle_editor_command(command: &str) {
             "[info]".blue().bold(),
             command
         );
-        println!("{} For GUI editors, add --wait or -w flag.", "[hint]".yellow().bold());
-        println!("{} Example: rustlrn editor \"code --wait\"", "[hint]".yellow().bold());
+        println!(
+            "{} For GUI editors, add --wait or -w flag.",
+            "[hint]".yellow().bold()
+        );
+        println!(
+            "{} Example: rustlrn editor \"code --wait\"",
+            "[hint]".yellow().bold()
+        );
     }
-    
+
     let new_config = config::Config {
         editor: Some(command.to_string()),
     };
-    
+
     config::save_config(&new_config);
     println!("{} Editor configured successfully!", "[✓]".green().bold());
 }
@@ -309,40 +349,43 @@ fn handle_code_execution(code: &str) {
     let mut retry_count = 0;
     let max_retries = 3;
     let mut current_code = code.to_string();
-    
+
     loop {
         let executable_code = executor::ensure_main_wrapper(&current_code);
         let result = executor::execute_code(&executable_code);
-        
+
         if result.success {
             ui::show_execution_result(&result, &current_code);
             break;
         } else {
             ui::show_execution_result(&result, &current_code);
-            
+
             if retry_count >= max_retries {
-                println!("\n{} Maximum retries exceeded. Please fix the code manually.", "[error]".red().bold());
+                println!(
+                    "\n{} Maximum retries exceeded. Please fix the code manually.",
+                    "[error]".red().bold()
+                );
                 println!("{} Press any key to continue...", "[enter]".dimmed());
                 let mut temp = String::new();
                 io::stdin().read_line(&mut temp).unwrap();
                 break;
             }
-            
+
             println!("\n{} Edit again? (y/n)", "[question]".yellow().bold());
-            
+
             let mut response = String::new();
             io::stdin().read_line(&mut response).unwrap();
-            
+
             if response.trim().to_lowercase() != "y" {
                 println!("{} Skipping retry.", "[info]".blue().bold());
                 break;
             }
-            
+
             retry_count += 1;
-            
+
             // Reload config
             let config = config::load_config();
-            
+
             // Re-edit the code
             match ui::edit_code_with_editor(&current_code, 0, &config) {
                 Ok(new_code) => {

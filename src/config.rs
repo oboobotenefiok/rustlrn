@@ -9,14 +9,12 @@ use std::path::PathBuf;
 /// Application configuration
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
-    pub editor: Option<String>,  // No default - user must set it
+    pub editor: Option<String>, // No default - user must set it
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self {
-            editor: None,
-        }
+        Self { editor: None }
     }
 }
 
@@ -32,7 +30,7 @@ pub fn config_path() -> PathBuf {
 /// Load configuration from file
 pub fn load_config() -> Config {
     let path = config_path();
-    
+
     if !path.exists() {
         // Return default config with no editor set
         return Config::default();
@@ -60,7 +58,7 @@ pub fn load_config() -> Config {
 /// Save configuration to file
 pub fn save_config(config: &Config) {
     let path = config_path();
-    
+
     if let Some(parent) = path.parent() {
         if !parent.exists() {
             fs::create_dir_all(parent).expect("Could not create config directory");
@@ -74,15 +72,15 @@ pub fn save_config(config: &Config) {
 /// Validate that an editor command exists
 pub fn validate_editor(editor_cmd: &str) -> bool {
     use std::process::Command;
-    
+
     // Extract the base command (first word) for validation
     let cmd_parts: Vec<&str> = editor_cmd.split_whitespace().collect();
     if cmd_parts.is_empty() {
         return false;
     }
-    
+
     let base_cmd = cmd_parts[0];
-    
+
     // Try to find the command
     if cfg!(target_os = "windows") {
         Command::new("where")
@@ -104,18 +102,21 @@ pub fn is_blocking_editor(editor_cmd: &str) -> bool {
     // Non-blocking GUI editors usually don't have --wait or similar flags
     let non_blocking = ["code", "subl", "atom", "notepad"];
     let cmd_parts: Vec<&str> = editor_cmd.split_whitespace().collect();
-    
+
     if cmd_parts.is_empty() {
         return false;
     }
-    
+
     let base_cmd = cmd_parts[0];
-    
+
     // Check if it's a known GUI editor without wait flag
-    if non_blocking.contains(&base_cmd) && !editor_cmd.contains("--wait") && !editor_cmd.contains("-w") {
+    if non_blocking.contains(&base_cmd)
+        && !editor_cmd.contains("--wait")
+        && !editor_cmd.contains("-w")
+    {
         return false;
     }
-    
+
     true
 }
 
