@@ -4,38 +4,46 @@ use crate::NAME;
 use colored::Colorize;
 
 #[cfg(target_os = "windows")]
-fn clear_screen() {
-    std::process::Command::new("cmd")
+pub fn clear_screen() {
+    let _ = std::process::Command::new("cmd")
         .args(&["/c", "cls"])
-        .status()
-        .unwrap();
+        .status();
 }
 
 #[cfg(not(target_os = "windows"))]
 pub fn clear_screen() {
-    std::process::Command::new("clear").status().unwrap();
+    let _ = std::process::Command::new("clear").status();
 }
 
-fn get_terminal_width() -> usize {
-    if let Some((width, _height)) = terminal_size::terminal_size() {
-        width.0 as usize
-    } else {
-        80
-    }
+fn terminal_width() -> usize {
+    terminal_size::terminal_size()
+        .map(|(width, _)| width.0 as usize)
+        .unwrap_or(80)
+}
+
+fn margin_str() -> String {
+    let width = terminal_width();
+    let margin = if width > 80 { 2 } else { 0 };
+    " ".repeat(margin)
+}
+
+/// Wait for the user to press Enter before continuing
+pub fn wait_for_enter() {
+    let margin = margin_str();
+    println!("\n{}{}", margin, "[enter] Press Enter to continue...".dimmed());
+    let mut input = String::new();
+    let _ = std::io::stdin().read_line(&mut input);
 }
 
 pub fn show_header() {
-    let term_width = get_terminal_width();
-    let margin = if term_width > 80 { 2 } else { 0 };
-    let margin_str = " ".repeat(margin);
-    
-    println!("{}{}", margin_str, NAME.cyan().bold());
-    println!("{}{}", margin_str, "-".repeat(40).cyan());
+    let margin = margin_str();
+    println!("{}{}", margin, NAME.cyan().bold());
+    println!("{}{}", margin, "-".repeat(40).cyan());
 }
 
 pub fn edit_code_with_editor(
     code: &str,
-    block_num: usize,
+    _block_num: usize,
     config: &config::Config,
 ) -> Result<String, String> {
     use std::fs;
@@ -43,10 +51,12 @@ pub fn edit_code_with_editor(
     use std::process::Command;
     use tempfile::NamedTempFile;
 
-    let editor_cmd = match &config.editor {
-        Some(cmd) => cmd,
-        None => {
-            return Err("No editor configured!\n\n\
+    let editor_cmd = config
+        .editor
+        .as_ref()
+        .ok_or_else(|| {
+            format!(
+                "No editor configured!\n\n\
                  Please set your editor with: rustlrn editor <command>\n\
                  Examples:\n\
                    rustlrn editor nano\n\
@@ -54,9 +64,8 @@ pub fn edit_code_with_editor(
                    rustlrn editor vim\n\
                    rustlrn editor \"code --wait\"\n\
                    rustlrn editor \"subl -w\""
-                .to_string());
-        }
-    };
+            )
+        })?;
 
     let mut temp_file = NamedTempFile::new()
         .map_err(|e| format!("Failed to create temp file: {}", e))?;
@@ -69,65 +78,47 @@ pub fn edit_code_with_editor(
             .map_err(|e| format!("Failed to flush temp file: {}", e))?;
     }
 
-    let temp_path = temp_file.path().to_path_buf();
-    let temp_path_display = temp_path.display();
+    let temp_path = temp_file.path();
 
-    let block_label = if block_num > 0 {
-        format!("block #{}", block_num)
-    } else {
-        "free-form".to_string()
-    };
+    let cmd_parts: Vec<&str> = editor_cmd.split_whitespace().collect();
+    let (editor_cmd_base, editor_args) = cmd_parts.split_first()
+        .ok_or_else(|| format!("Empty editor command: '{}'", editor_cmd))?;
 
-    let term_width = get_terminal_width();
-    let margin = if term_width > 80 { 2 } else { 0 };
-    let margin_str = " ".repeat(margin);
-
-  
-       
+    let margin = margin_str();
     println!(
-        "{}{} Edit the code, save, and close the editor. After seeing a successful result, press ENTER to continue",
-        margin_str,
+        "{}{} Opening editor... Edit the code, save, and close the editor when done.",
+        margin,
         "[hint]".yellow().bold()
     );
 
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input).unwrap();
-
-    let cmd_parts: Vec<&str> = editor_cmd.split_whitespace().collect();
-    let editor_cmd_base = cmd_parts[0];
-    let editor_args = &cmd_parts[1..];
-
     let status = Command::new(editor_cmd_base)
         .args(editor_args)
-        .arg(&temp_path)
+        .arg(temp_path)
         .status()
         .map_err(|e| format!("Failed to open editor '{}': {}", editor_cmd, e))?;
 
     if !status.success() {
-        return Err(format!("Editor exited with error"));
+        return Err("Editor exited with error".to_string());
     }
 
-    let edited_code = fs::read_to_string(&temp_path)
-        .map_err(|e| format!("Failed to read edited code: {}", e))?;
-
-    if edited_code.trim().is_empty() {
-        return Err("No code entered".to_string());
-    }
-
-    Ok(edited_code)
+    fs::read_to_string(temp_path)
+        .map_err(|e| format!("Failed to read edited code: {}", e))
+        .and_then(|edited_code| {
+            if edited_code.trim().is_empty() {
+                Err("No code entered".to_string())
+            } else {
+                Ok(edited_code)
+            }
+        })
 }
 
 pub fn show_lesson(content: &str) {
-    let term_width = get_terminal_width();
-    let margin = if term_width > 80 { 2 } else { 0 };
-    let margin_str = " ".repeat(margin);
-    let code_margin = " ".repeat(margin + 2);
-    
-    let code_blocks = executor::extract_code_blocks(content);
-    let mut block_index = 0;
+    let margin = margin_str();
+    let code_margin = " ".repeat(margin.len() + 2);
 
     let mut in_code_block = false;
     let mut code_buffer: Vec<String> = Vec::new();
+    let mut block_index = 0;
 
     for line in content.lines() {
         let trimmed = line.trim();
@@ -139,29 +130,10 @@ pub fn show_lesson(content: &str) {
 
         if trimmed.starts_with("```") {
             if in_code_block && !code_buffer.is_empty() {
-                let code_text = code_buffer.join("\n");
-                let block_num = block_index + 1;
-
-                println!("{}{}", code_margin, "┌─ Code Block ─────────────".dimmed());
-                for code_line in code_buffer.iter() {
-                    println!("{}{}", code_margin, format!("│ {}", code_line).dimmed());
-                }
-                println!("{}{}", code_margin, "└─────────────────────────".dimmed());
-
-                let has_main = executor::has_main_function(&code_text);
-                if has_main || code_text.contains("println!") {
-                    println!(
-                        "{}{} '{}'",
-                        margin_str,
-                        "[ID]".green().bold(),
-                        block_num
-                    );
-                }
-
+                render_code_block(&code_buffer, block_index + 1, &margin, &code_margin);
                 block_index += 1;
                 code_buffer.clear();
             }
-
             in_code_block = !in_code_block;
             continue;
         }
@@ -171,95 +143,130 @@ pub fn show_lesson(content: &str) {
             continue;
         }
 
-        if trimmed.chars().all(|c| {
-            c.is_uppercase() || c.is_whitespace() || c == ':' || c == '•' || c == '━' || c == '═'
-        }) && trimmed.len() > 3
-            && !trimmed.starts_with("TIP")
-            && !trimmed.starts_with("NOTE")
-            && !trimmed.starts_with("Based on")
-            && !trimmed.starts_with("*Credit")
-            && !trimmed.starts_with("|")
-        {
-            println!("{}{}\n", margin_str, trimmed.yellow().bold());
-        } else if trimmed.starts_with("TIP:") {
-            println!("{}{}", margin_str, trimmed.green().bold());
+        render_text_line(trimmed, &margin);
+    }
+
+    if !code_buffer.is_empty() {
+        render_code_block(&code_buffer, block_index + 1, &margin, &code_margin);
+    }
+}
+
+fn render_code_block(code_buffer: &[String], block_num: usize, margin: &str, code_margin: &str) {
+    let code_text = code_buffer.join("\n");
+    
+    println!("{}{}", code_margin, "┌─ Code Block ─────────────".dimmed());
+    for code_line in code_buffer {
+        println!("{}{}", code_margin, format!("│ {}", code_line).dimmed());
+    }
+    println!("{}{}", code_margin, "└─────────────────────────".dimmed());
+
+    let has_main = executor::has_main_function(&code_text);
+    if has_main || code_text.contains("println!") {
+        println!("{}{} '{}'", margin, "[ID]".green().bold(), block_num);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LineType {
+    Heading,
+    Tip,
+    Note,
+    Checkmark,
+    Bullet,
+    SectionHeader,
+    CodeLine,
+    Error,
+    Separator,
+    MarkdownH1,
+    MarkdownH2,
+    MarkdownH3,
+    TableRow,
+    Plain,
+}
+
+impl LineType {
+    fn classify(trimmed: &str) -> Self {
+        if trimmed.starts_with("TIP:") {
+            LineType::Tip
         } else if trimmed.starts_with("NOTE:") {
-            println!("{}{}", margin_str, trimmed.blue().bold());
-        } else if trimmed.starts_with("✓") {
-            println!("{}{}", margin_str, format!("  {}", trimmed).green());
-        } else if trimmed.starts_with("•") || trimmed.starts_with("-") {
-            println!("{}{}", margin_str, format!("  {}", trimmed).cyan());
+            LineType::Note
+        } else if trimmed.starts_with('✓') {
+            LineType::Checkmark
+        } else if trimmed.starts_with('•') || trimmed.starts_with('-') {
+            LineType::Bullet
         } else if trimmed.starts_with("Example:")
             || trimmed.starts_with("LOCAL VARIABLE SCOPE:")
             || trimmed.starts_with("STACK vs. HEAP:")
         {
-            println!("\n{}{}", margin_str, trimmed.cyan().bold());
+            LineType::SectionHeader
         } else if trimmed.starts_with("fn main()")
             || trimmed.starts_with("fn status()")
             || trimmed.starts_with("let")
         {
-            println!("{}{}", margin_str, format!("  {}", trimmed).dimmed());
+            LineType::CodeLine
         } else if trimmed.contains("ERROR!") {
-            println!("{}{}", margin_str, format!("  {}", trimmed).red().bold());
+            LineType::Error
         } else if trimmed.starts_with("===") || trimmed.starts_with("━━━") {
-            println!("{}{}", margin_str, trimmed.dimmed());
-        } else if trimmed.starts_with("#") && !trimmed.starts_with("##") {
-            println!("\n{}{}\n", margin_str, trimmed[1..].trim().cyan().bold().underline());
-        } else if trimmed.starts_with("##") {
-            println!("\n{}{}\n", margin_str, trimmed[2..].trim().yellow().bold());
-        } else if trimmed.starts_with("###") {
-            println!("{}{}\n", margin_str, trimmed[3..].trim().white().bold());
-        } else if trimmed.starts_with("|") && trimmed.contains("|") {
-            println!("{}{}", margin_str, trimmed.dimmed());
+            LineType::Separator
+        } else if trimmed.starts_with("# ") && !trimmed.starts_with("##") {
+            LineType::MarkdownH1
+        } else if trimmed.starts_with("## ") {
+            LineType::MarkdownH2
+        } else if trimmed.starts_with("### ") {
+            LineType::MarkdownH3
+        } else if trimmed.starts_with('|') && trimmed.contains('|') {
+            LineType::TableRow
+        } else if is_heading(trimmed) {
+            LineType::Heading
         } else {
-            println!("{}{}", margin_str, trimmed);
+            LineType::Plain
         }
     }
 
-    if !code_buffer.is_empty() {
-        let code_text = code_buffer.join("\n");
-        let block_num = block_index + 1;
-
-        println!("{}{}", code_margin, "┌─ Code Block ─────────────".dimmed());
-        for code_line in code_buffer.iter() {
-            println!("{}{}", code_margin, format!("│ {}", code_line).dimmed());
+    fn render(self, trimmed: &str, margin: &str) -> String {
+        match self {
+            LineType::Heading => format!("{}{}\n", margin, trimmed.yellow().bold()),
+            LineType::Tip => format!("{}{}", margin, trimmed.green().bold()),
+            LineType::Note => format!("{}{}", margin, trimmed.blue().bold()),
+            LineType::Checkmark => format!("{}{}", margin, format!("  {}", trimmed).green()),
+            LineType::Bullet => format!("{}{}", margin, format!("  {}", trimmed).cyan()),
+            LineType::SectionHeader => format!("\n{}{}", margin, trimmed.cyan().bold()),
+            LineType::CodeLine => format!("{}{}", margin, format!("  {}", trimmed).dimmed()),
+            LineType::Error => format!("{}{}", margin, format!("  {}", trimmed).red().bold()),
+            LineType::Separator => format!("{}{}", margin, trimmed.dimmed()),
+            LineType::MarkdownH1 => format!("\n{}{}\n", margin, trimmed[1..].trim().cyan().bold().underline()),
+            LineType::MarkdownH2 => format!("\n{}{}\n", margin, trimmed[2..].trim().yellow().bold()),
+            LineType::MarkdownH3 => format!("{}{}\n", margin, trimmed[3..].trim().white().bold()),
+            LineType::TableRow => format!("{}{}", margin, trimmed.dimmed()),
+            LineType::Plain => format!("{}{}", margin, trimmed),
         }
-        println!("{}{}", code_margin, "└─────────────────────────".dimmed());
-
-        let has_main = executor::has_main_function(&code_text);
-        if has_main || code_text.contains("println!") {
-            println!(
-                "{}{} Run this code? Press 'r{}'",
-                margin_str,
-                "[r]".green().bold(),
-                block_num
-            );
-        }
-        println!(
-            "{}{} Edit this code? Press 'ed{}'",
-            margin_str,
-            "[ed]".cyan().bold(),
-            block_num
-        );
-        println!(
-            "{}{} Reset to original? Press 'z{}'",
-            margin_str,
-            "[z]".red().bold(),
-            block_num
-        );
     }
 }
 
+fn is_heading(text: &str) -> bool {
+    text.chars().all(|c| c.is_uppercase() || c.is_whitespace() || c == ':' || c == '•' || c == '━' || c == '═')
+        && text.len() > 3
+        && !text.starts_with("TIP")
+        && !text.starts_with("NOTE")
+        && !text.starts_with("Based on")
+        && !text.starts_with("*Credit")
+        && !text.starts_with('|')
+}
+
+fn render_text_line(trimmed: &str, margin: &str) {
+    let line_type = LineType::classify(trimmed);
+    let rendered = line_type.render(trimmed, margin);
+    print!("{}", rendered);
+}
+
 pub fn show_controls() {
-    let term_width = get_terminal_width();
-    let margin = if term_width > 80 { 2 } else { 0 };
-    let margin_str = " ".repeat(margin);
-    
+    let margin = margin_str();
+
     println!();
-    println!("{}{}", margin_str, "-".repeat(40).dimmed());
+    println!("{}{}", margin, "-".repeat(40).dimmed());
     println!(
         "{}{} {}  {} {}  {} {}  {} {}  {} {}  {} {}",
-        margin_str,
+        margin,
         "[n]".green().bold(),
         "next".dimmed(),
         "[p]".yellow().bold(),
@@ -278,7 +285,7 @@ pub fn show_controls() {
     if config.editor.is_none() {
         println!(
             "{}{} No editor set. Run: rustlrn editor <command>",
-            margin_str,
+            margin,
             "[!]".yellow().bold()
         );
     }
@@ -287,46 +294,38 @@ pub fn show_controls() {
 }
 
 pub fn show_execution_result(result: &executor::ExecutionResult, _code: &str) {
-    let term_width = get_terminal_width();
-    let margin = if term_width > 80 { 2 } else { 0 };
-    let margin_str = " ".repeat(margin);
-    
+    let margin = margin_str();
+
     println!();
-    println!("{}{}", margin_str, "═".repeat(40).cyan());
-    println!("{}{}", margin_str, "▶ EXECUTION RESULT".cyan().bold());
-    println!("{}{}", margin_str, "─".repeat(40).dimmed());
+    println!("{}{}", margin, "═".repeat(40).cyan());
+    println!("{}{}", margin, "▶ EXECUTION RESULT".cyan().bold());
+    println!("{}{}", margin, "─".repeat(40).dimmed());
 
     if result.success {
-        println!("{}{}", margin_str, "✓ SUCCESS".green().bold());
-        if !result.output.is_empty() {
-            println!("\n{}{}", margin_str, "Output:".dimmed());
-            for line in result.output.lines() {
-                println!("{}{}", margin_str, format!("  {}", line));
-            }
+        println!("{}{}", margin, "✓ SUCCESS".green().bold());
+        if result.output.is_empty() {
+            println!("{}{}", margin, "  (no output)".dimmed());
         } else {
-            println!("{}{}", margin_str, "  (no output)".dimmed());
+            println!("\n{}{}", margin, "Output:".dimmed());
+            for line in result.output.lines() {
+                println!("{}{}", margin, format!("  {}", line));
+            }
         }
     } else {
-        println!("{}{}", margin_str, "✗ ERROR".red().bold());
+        println!("{}{}", margin, "✗ ERROR".red().bold());
         if !result.error.is_empty() {
-            println!("\n{}{}", margin_str, "Compiler/Runtime Error:".red().dimmed());
+            println!("\n{}{}", margin, "Compiler/Runtime Error:".red().dimmed());
             for line in result.error.lines() {
-                println!("{}{}", margin_str, format!("  {}", line).red());
+                println!("{}{}", margin, format!("  {}", line).red());
             }
         }
     }
 
-    println!("{}{}", margin_str, "═".repeat(40).cyan());
-    println!("\n{}{} Press any key to continue...", margin_str, "[enter]".dimmed());
-
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input).unwrap();
+    println!("{}{}", margin, "═".repeat(40).cyan());
+    wait_for_enter();
 }
 
 pub fn show_error(msg: &str) {
-    let term_width = get_terminal_width();
-    let margin = if term_width > 80 { 2 } else { 0 };
-    let margin_str = " ".repeat(margin);
-    
-    eprintln!("{}{}", margin_str, msg.red().bold());
+    let margin = margin_str();
+    eprintln!("{}{}", margin, msg.red().bold());
 }
