@@ -1,706 +1,359 @@
-// File: src/main.rs
-//! Entry point for the RustLrn application
-//!
-//! This module handles command-line argument parsing, application initialization,
-//! and the main event loop with proper error handling and logging.
+//! This is the entry point of the program and will mostly act as a 'pointer'
 
 mod config;
-mod error;
 mod executor;
 mod lessons;
-mod state;
 mod ui;
-mod commands;
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use std::io::{self, Write};
-use std::time::Instant;
-use std::process;
 
-use crate::config::Config;
-use crate::error::{ErrorContext, Result, RustlrnError};
-use crate::executor::ExecutionConfig;
-use crate::state::{AppState, LessonId, BlockId};
-use crate::commands::{CommandHandler, CommandResult};
+const NAME: &str = "rustlrn";
 
-/// Application name
-const APP_NAME: &str = "rustlrn";
-
-/// Application version
-const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Command-line interface structure
 #[derive(Parser)]
-#[command(
-    author = "RustLrn Team",
-    version = APP_VERSION,
-    about = "Rust Tutor - Learn Rust interactively right from your terminal",
-    long_about = None
-)]
+#[command(author, version, about = "Rust Tutor - Learn Rust interactively right from your terminal", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Starting lesson number (1-indexed)
-    #[arg(short, long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=10))]
+    /// Starting lesson number (1-5)
+    #[arg(short, long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=5))]
     lesson: u8,
-
-    /// Enable verbose output
-    #[arg(short, long, global = true)]
-    verbose: bool,
-
-    /// Enable debug output
-    #[arg(long, global = true)]
-    debug: bool,
-
-    /// Disable colored output
-    #[arg(long, global = true)]
-    no_color: bool,
-
-    /// Configuration file path
-    #[arg(long, global = true)]
-    config: Option<String>,
 }
 
-/// Subcommands for the CLI
 #[derive(Subcommand)]
 enum Commands {
     /// Configure the editor used for editing code blocks
     Editor {
         /// The editor command to use (e.g., nano, micro, "code --wait")
         command: String,
-
-        /// Validate the editor command exists
-        #[arg(long)]
-        validate: bool,
     },
-
-    /// Show current configuration
-    Config,
-
-    /// Reset configuration to defaults
-    ConfigReset,
-
-    /// Show lesson information
-    Lessons {
-        /// List all available lessons
-        #[arg(long)]
-        list: bool,
-
-        /// Show specific lesson
-        #[arg(long)]
-        show: Option<u8>,
-    },
-
-    /// Run code without opening editor
-    Run {
-        /// The code to run (provided as a string)
-        code: Option<String>,
-
-        /// Run from a file
-        #[arg(short, long)]
-        file: Option<String>,
-
-        /// Code block to run from current lesson
-        #[arg(short, long)]
-        block: Option<u8>,
-    },
-
-    /// Clear all user progress
-    Clear,
 }
 
-/// Main entry point
-fn main() {
-    // Parse command line arguments
-    let cli = Cli::parse();
-    
-    // Configure colored output
-    if cli.no_color {
-        colored::control::set_override(false);
+struct AppState {
+    current_lesson: usize,
+    warn_count: usize,
+    edited_blocks: std::collections::HashMap<(usize, usize), String>,
+    config: config::Config,
+}
+
+impl AppState {
+    fn new(lesson: u8) -> Self {
+        Self {
+            current_lesson: (lesson - 1) as usize,
+            warn_count: 0,
+            edited_blocks: std::collections::HashMap::new(),
+            config: config::load_config(),
+        }
     }
-    
-    // Initialize logging
-    let log_level = if cli.debug {
-        log::LevelFilter::Debug
-    } else if cli.verbose {
-        log::LevelFilter::Info
-    } else {
-        log::LevelFilter::Warn
-    };
-    
-    env_logger::Builder::new()
-        .filter_level(log_level)
-        .format_timestamp_millis()
-        .init();
-    
-    log::info!("Starting {} v{}", APP_NAME, APP_VERSION);
-    
-    // Load configuration
-    let config = match load_configuration(&cli) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            eprintln!("{} Failed to load configuration: {}", "✗".red().bold(), e);
-            process::exit(1);
+
+    fn increment_warning(&mut self) {
+        self.warn_count += 1;
+    }
+
+    fn reset_warning(&mut self) {
+        self.warn_count = 0;
+    }
+
+    fn has_warning(&self) -> bool {
+        self.warn_count > 0
+    }
+
+    fn navigate_next(&mut self, total_lessons: usize) -> bool {
+        if self.current_lesson < total_lessons - 1 {
+            self.current_lesson += 1;
+            true
+        } else {
+            false
         }
-    };
-    
-    // Handle subcommands
-    if let Some(command) = cli.command {
-        let result = handle_subcommand(command, &config, cli.lesson);
-        if let Err(e) = result {
-            eprintln!("{} {}", "✗".red().bold(), e);
-            process::exit(1);
+    }
+
+    fn navigate_previous(&mut self) -> bool {
+        if self.current_lesson > 0 {
+            self.current_lesson -= 1;
+            true
+        } else {
+            false
         }
+    }
+
+    fn get_cached_or_original<'a>(&'a self, lesson_idx: usize, block_idx: usize, original: &'a str) -> &'a str {
+        self.edited_blocks
+            .get(&(lesson_idx, block_idx))
+            .map_or(original, |s| s.as_str())
+    }
+
+    fn update_code_block(&mut self, lesson_idx: usize, block_idx: usize, code: String) {
+        self.edited_blocks.insert((lesson_idx, block_idx), code);
+    }
+
+    fn reset_code_block(&mut self, lesson_idx: usize, block_idx: usize) -> bool {
+        self.edited_blocks.remove(&(lesson_idx, block_idx)).is_some()
+    }
+}
+
+fn main() {
+    let cli = Cli::parse();
+
+    if let Some(Commands::Editor { command }) = cli.command {
+        handle_editor_command(&command);
         return;
     }
-    
-    // Load lessons
-    let lessons = match lessons::load_all_lessons() {
-        Ok(lessons) => lessons,
-        Err(e) => {
-            eprintln!("{} Failed to load lessons: {}", "✗".red().bold(), e);
-            process::exit(1);
-        }
-    };
-    
-    if lessons.is_empty() {
-        eprintln!("{} No lessons found!", "✗".red().bold());
-        process::exit(1);
-    }
-    
-    // Create application state
-    let start_lesson = (cli.lesson - 1) as usize;
-    let state = match AppState::new(start_lesson, lessons.len(), config) {
-        Ok(state) => state,
-        Err(e) => {
-            eprintln!("{} Failed to initialize application: {}", "✗".red().bold(), e);
-            process::exit(1);
-        }
-    };
-    
-    // Run the main application loop
-    if let Err(e) = run_app(state, &lessons) {
-        log::error!("Application error: {}", e);
-        
-        // Save progress before exiting
-        if let Err(save_err) = state.save_progress() {
-            log::error!("Failed to save progress: {}", save_err);
-        }
-        
-        // Show user-friendly error message
-        let terminal = ui::Terminal::new();
-        let margin = terminal.margin_str();
-        eprintln!(
-            "{}{} An error occurred: {}",
-            margin,
-            "✗".red().bold(),
-            error::ui_errors::display_error(&e)
-        );
-        
-        // Suggest recovery if available
-        if let Some(suggestion) = error::ui_errors::suggest_recovery(&e) {
-            eprintln!("{}{} {}", margin, "💡".yellow().bold(), suggestion);
-        }
-        
-        process::exit(1);
-    }
-}
 
-/// Load configuration with command-line overrides
-fn load_configuration(cli: &Cli) -> Result<Config> {
-    let mut config = if let Some(path) = &cli.config {
-        // Load from custom path
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| RustlrnError::Io(e))
-            .with_context("Failed to read config file")?;
-        
-        toml::from_str(&content)
-            .map_err(|e| RustlrnError::Config(format!("Invalid config file: {}", e)))?
-    } else {
-        // Load from default path
-        Config::load()?
-    };
-    
-    // Override verbosity from CLI
-    if cli.verbose {
-        config.verbosity = config::Verbosity::Verbose;
-    }
-    if cli.debug {
-        config.verbosity = config::Verbosity::Debug;
-    }
-    
-    Ok(config)
-}
+    let lessons = lessons::load_all_lessons();
+    let mut state = AppState::new(cli.lesson);
 
-/// Handle subcommands
-fn handle_subcommand(command: Commands, config: &Config, lesson: u8) -> Result<()> {
-    match command {
-        Commands::Editor { command, validate } => {
-            handle_editor_command(&command, validate, config)
-        }
-        Commands::Config => {
-            handle_config_command(config)
-        }
-        Commands::ConfigReset => {
-            handle_config_reset()
-        }
-        Commands::Lessons { list, show } => {
-            handle_lessons_command(list, show)
-        }
-        Commands::Run { code, file, block } => {
-            handle_run_command(code, file, block, config)
-        }
-        Commands::Clear => {
-            handle_clear_command()
-        }
-    }
-}
-
-/// Handle the editor subcommand
-fn handle_editor_command(command: &str, validate: bool, config: &Config) -> Result<()> {
-    let terminal = ui::Terminal::new();
-    let margin = terminal.margin_str();
-    
-    println!("{}{} Setting editor to: {}", margin, "[config]".cyan().bold(), command.cyan());
-    
-    if validate || config::validate_editor(command) {
-        if !config::validate_editor(command) {
-            let cmd_parts: Vec<&str> = command.split_whitespace().collect();
-            let cmd_name = cmd_parts.first().unwrap_or(&"");
-            return Err(RustlrnError::Config(format!(
-                "Editor '{}' not found in PATH",
-                cmd_name
-            )));
-        }
-        println!("{}{} Editor validated successfully", margin, "✓".green().bold());
-    } else {
-        println!(
-            "{}{} Skipping validation (use --validate to check)",
-            margin,
-            "[info]".blue().bold()
-        );
-    }
-    
-    if !config::is_blocking_editor(command) {
-        println!(
-            "{}{} Note: '{}' may not block the terminal.",
-            margin,
-            "[info]".blue().bold(),
-            command
-        );
-        println!(
-            "{}{} For GUI editors, add --wait or -w flag.",
-            margin,
-            "[hint]".yellow().bold()
-        );
-        println!(
-            "{}{} Example: rustlrn editor \"code --wait\"",
-            margin,
-            "[hint]".yellow().bold()
-        );
-    }
-    
-    // Save the configuration
-    let mut new_config = config.clone();
-    new_config.set_editor(command.to_string())?;
-    new_config.save()?;
-    
-    println!("{}{} Editor configured successfully!", margin, "✓".green().bold());
-    Ok(())
-}
-
-/// Handle the config subcommand
-fn handle_config_command(config: &Config) -> Result<()> {
-    let terminal = ui::Terminal::new();
-    let margin = terminal.margin_str();
-    
-    println!("{}{}", margin, "Current Configuration:".cyan().bold());
-    println!("{}{}", margin, "─".repeat(40).dimmed());
-    
-    println!(
-        "{}{} Editor: {}",
-        margin,
-        "  Editor".dimmed(),
-        config.get_editor().unwrap_or("(not set)").yellow()
-    );
-    println!(
-        "{}{} Theme: {}",
-        margin,
-        "  Theme".dimmed(),
-        format!("{:?}", config.theme).cyan()
-    );
-    println!(
-        "{}{} Verbosity: {}",
-        margin,
-        "  Verbosity".dimmed(),
-        format!("{:?}", config.verbosity).cyan()
-    );
-    println!(
-        "{}{} Auto-run: {}",
-        margin,
-        "  Auto-run".dimmed(),
-        format!("{:?}", config.auto_run).cyan()
-    );
-    println!(
-        "{}{} Code Display: {}",
-        margin,
-        "  Code Display".dimmed(),
-        format!("{:?}", config.code_display).cyan()
-    );
-    println!(
-        "{}{} Line Numbers: {}",
-        margin,
-        "  Line Numbers".dimmed(),
-        if config.show_line_numbers { "enabled".green() } else { "disabled".red() }
-    );
-    println!(
-        "{}{} Max Retries: {}",
-        margin,
-        "  Max Retries".dimmed(),
-        config.max_retries.to_string().yellow()
-    );
-    println!(
-        "{}{} Compile Timeout: {}s",
-        margin,
-        "  Compile Timeout".dimmed(),
-        config.compile_timeout.to_string().yellow()
-    );
-    println!(
-        "{}{} Run Timeout: {}s",
-        margin,
-        "  Run Timeout".dimmed(),
-        config.run_timeout.to_string().yellow()
-    );
-    
-    if !config.custom_settings.is_empty() {
-        println!("\n{}{}", margin, "Custom Settings:".dimmed());
-        for (key, value) in &config.custom_settings {
-            println!("{}{} {} = {}", margin, "  ", key.dimmed(), value.to_string().cyan());
-        }
-    }
-    
-    Ok(())
-}
-
-/// Handle the config-reset subcommand
-fn handle_config_reset() -> Result<()> {
-    let terminal = ui::Terminal::new();
-    let margin = terminal.margin_str();
-    
-    print!(
-        "{}{} Reset all configuration to defaults? (y/N): ",
-        margin,
-        "[question]".yellow().bold()
-    );
-    io::stdout().flush().unwrap();
-    
-    let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap();
-    
-    if input.trim().to_lowercase() == "y" {
-        let default_config = Config::default();
-        default_config.save()?;
-        println!("{}{} Configuration reset to defaults", margin, "✓".green().bold());
-    } else {
-        println!("{}{} Reset cancelled", margin, "[info]".blue().bold());
-    }
-    
-    Ok(())
-}
-
-/// Handle the lessons subcommand
-fn handle_lessons_command(list: bool, show: Option<u8>) -> Result<()> {
-    let terminal = ui::Terminal::new();
-    let margin = terminal.margin_str();
-    
-    let lessons = lessons::load_all_lessons()?;
-    
-    if list {
-        println!("{}{}", margin, "Available Lessons:".cyan().bold());
-        println!("{}{}", margin, "─".repeat(40).dimmed());
-        
-        for (i, content) in lessons.iter().enumerate() {
-            let title = content.lines()
-                .find(|line| line.starts_with("# ") || line.starts_with("## "))
-                .unwrap_or(&format!("Lesson {}", i + 1))
-                .trim_start_matches('#')
-                .trim();
-            
-            let num_blocks = executor::extract_code_blocks(content).len();
-            let has_main = content.contains("fn main()");
-            
-            println!(
-                "{}{} {}: {} {}",
-                margin,
-                format!("[{}]", i + 1).cyan(),
-                title,
-                if has_main { "[executable]".green() } else { "[reference]".dimmed() },
-                format!("({} blocks)", num_blocks).dimmed()
-            );
-        }
-        return Ok(());
-    }
-    
-    if let Some(lesson_num) = show {
-        let idx = (lesson_num - 1) as usize;
-        if idx >= lessons.len() {
-            return Err(RustlrnError::Lesson(format!(
-                "Lesson {} not found (max: {})",
-                lesson_num,
-                lessons.len()
-            )));
-        }
-        
-        ui::show_header(APP_NAME);
-        ui::show_lesson(&lessons[idx], &Config::default(), true);
-        return Ok(());
-    }
-    
-    // Default: show lesson count
-    println!(
-        "{}{} {} lessons available",
-        margin,
-        "[info]".cyan().bold(),
-        lessons.len()
-    );
-    println!(
-        "{}{} Use --list to see all lessons",
-        margin,
-        "[hint]".dimmed()
-    );
-    println!(
-        "{}{} Use --show <number> to view a lesson",
-        margin,
-        "[hint]".dimmed()
-    );
-    
-    Ok(())
-}
-
-/// Handle the run subcommand
-fn handle_run_command(code: Option<String>, file: Option<String>, block: Option<u8>, config: &Config) -> Result<()> {
-    let terminal = ui::Terminal::new();
-    let margin = terminal.margin_str();
-    
-    // Get the code to run
-    let code_to_run = if let Some(code_str) = code {
-        code_str
-    } else if let Some(file_path) = file {
-        std::fs::read_to_string(&file_path)
-            .map_err(|e| RustlrnError::Io(e))
-            .with_context("Failed to read file")?
-    } else if let Some(block_num) = block {
-        // Load the current lesson and extract the block
-        let lessons = lessons::load_all_lessons()?;
-        let idx = 0; // Default to first lesson for now
-        if idx >= lessons.len() {
-            return Err(RustlrnError::Lesson("No lessons available".to_string()));
-        }
-        
-        let blocks = executor::extract_code_blocks(&lessons[idx]);
-        let block_idx = (block_num - 1) as usize;
-        if block_idx >= blocks.len() {
-            return Err(RustlrnError::Lesson(format!(
-                "Block {} not found in lesson (max: {})",
-                block_num,
-                blocks.len()
-            )));
-        }
-        blocks[block_idx].clone()
-    } else {
-        return Err(RustlrnError::Parse(
-            "Please provide code, a file, or a block number".to_string()
-        ));
-    };
-    
-    // Execute the code
-    let code_with_main = executor::ensure_main_wrapper(&code_to_run);
-    let exec_config = ExecutionConfig {
-        compile_timeout: config.compile_timeout,
-        run_timeout: config.run_timeout,
-        ..ExecutionConfig::default()
-    };
-    
-    let result = executor::execute_code_with_config(&code_with_main, exec_config)?;
-    ui::show_execution_result(&result, config);
-    
-    Ok(())
-}
-
-/// Handle the clear subcommand
-fn handle_clear_command() -> Result<()> {
-    let terminal = ui::Terminal::new();
-    let margin = terminal.margin_str();
-    
-    print!(
-        "{}{} Clear all user progress? (y/N): ",
-        margin,
-        "[question]".yellow().bold()
-    );
-    io::stdout().flush().unwrap();
-    
-    let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap();
-    
-    if input.trim().to_lowercase() == "y" {
-        let progress_path = state::UserProgress::progress_path();
-        if progress_path.exists() {
-            std::fs::remove_file(&progress_path)
-                .map_err(|e| RustlrnError::Io(e))?;
-        }
-        println!("{}{} Progress cleared successfully", margin, "✓".green().bold());
-    } else {
-        println!("{}{} Clear cancelled", margin, "[info]".blue().bold());
-    }
-    
-    Ok(())
-}
-
-/// Run the main application loop
-fn run_app(mut state: AppState, lessons: &[String]) -> Result<()> {
-    let start_time = Instant::now();
-    let config = state.config().clone();
-    
-    // Create command handler
-    let mut command_handler = CommandHandler::new(&mut state, lessons);
-    
     loop {
-        // Clear screen and show UI
         ui::clear_screen();
-        ui::show_header(APP_NAME);
-        
-        // Show progress
-        let progress = state.progress_percentage();
-        if progress > 0.0 {
-            ui::show_progress_bar(progress, &format!("{}% complete", progress.round()));
-        }
-        
-        // Show current lesson
-        let current_idx = state.current_lesson().as_usize();
-        ui::show_lesson(&lessons[current_idx], config, config.show_line_numbers);
-        
-        // Show completion status
-        if state.is_lesson_completed(state.current_lesson()) {
-            let terminal = ui::Terminal::new();
-            let margin = terminal.margin_str();
-            println!("{}{}", margin, "✓ Lesson completed!".green().bold());
-        }
-        
-        ui::show_controls(config);
-        
-        // Show warning if any
+        ui::show_header();
+        ui::show_lesson(&lessons[state.current_lesson]);
+        ui::show_controls();
+
         if state.has_warning() {
-            let remaining = state.max_warnings - state.warning_count();
-            ui::show_warning(&format!(
-                "Invalid input. Please use a valid command. ({} remaining)",
-                remaining
-            ));
+            ui::show_error("Please type a valid input");
             state.reset_warning();
         }
-        
-        // Read user input
+
         let input = read_user_input();
         let input_trimmed = input.trim();
-        
-        // Handle the command
-        let (should_break, should_save) = match command_handler.handle(input_trimmed) {
-            Ok(CommandResult::Quit) => {
-                log::info!("User quit application");
-                (true, true)
-            }
-            Ok(CommandResult::Continue) => {
-                log::debug!("Continuing...");
-                (false, false)
-            }
-            Ok(CommandResult::Navigated) => {
-                log::debug!("Navigated to lesson {}", state.current_lesson().as_usize());
-                (false, true)
-            }
-            Ok(CommandResult::Executed) => {
-                log::debug!("Code executed");
-                (false, true)
-            }
-            Ok(CommandResult::Edited) => {
-                log::debug!("Code edited");
-                (false, true)
-            }
-            Ok(CommandResult::Reset) => {
-                log::debug!("Code reset");
-                (false, true)
-            }
-            Ok(CommandResult::Help) => {
-                ui::show_help(config);
-                ui::wait_for_enter();
-                (false, false)
-            }
-            Err(e) => {
-                log::debug!("Command error: {}", e);
-                state.increment_warning();
-                let terminal = ui::Terminal::new();
-                let margin = terminal.margin_str();
-                eprintln!("{}{}", margin, e.red().bold());
-                ui::wait_for_enter();
-                (false, false)
-            }
-        };
-        
-        // Save progress if needed
-        if should_save {
-            if let Err(e) = state.save_progress() {
-                log::error!("Failed to save progress: {}", e);
-            }
-        }
-        
-        // Track time spent
-        if !should_break {
-            let elapsed = start_time.elapsed();
-            state.track_time(state.current_lesson(), elapsed);
-        }
-        
-        if should_break {
+
+        if handle_command(input_trimmed, &mut state, &lessons).unwrap_or(false) {
             break;
         }
     }
-    
-    // Save final progress
-    state.save_progress()?;
-    
-    // Show goodbye message
-    let terminal = ui::Terminal::new();
-    let margin = terminal.margin_str();
-    println!("\n{}{} Thanks for learning Rust with {}!", 
-        margin,
-        "👋".green().bold(),
-        APP_NAME.cyan().bold()
-    );
-    
-    // Show summary
-    let completed = state.completed_count();
-    let total = state.total_lessons();
-    let time_spent = start_time.elapsed();
-    
-    println!(
-        "{}{} Completed {} of {} lessons ({:.1}%) in {:.1}s",
-        margin,
-        "[stats]".dimmed(),
-        completed,
-        total,
-        state.progress_percentage(),
-        time_spent.as_secs_f64()
-    );
-    
-    Ok(())
 }
 
-/// Read user input from stdin
 fn read_user_input() -> String {
     let mut input = String::new();
-    let terminal = ui::Terminal::new();
-    let margin = terminal.margin_str();
-    print!("{}{} ", margin, format!("{} >", APP_NAME).cyan().bold());
+    print!("{} ", "rustlrn >".cyan().bold());
     io::stdout().flush().unwrap();
     io::stdin().read_line(&mut input).unwrap();
     input
+}
+
+fn handle_command(input: &str, state: &mut AppState, lessons: &[String]) -> Option<bool> {
+    match input {
+        "n" => {
+            if !state.navigate_next(lessons.len()) {
+                state.increment_warning();
+            }
+            None
+        }
+        "p" => {
+            if !state.navigate_previous() {
+                state.increment_warning();
+            }
+            None
+        }
+        "q" => Some(true),
+        "r" => {
+            show_help();
+            ui::wait_for_enter();
+            None
+        }
+        cmd if cmd.starts_with("ed0") => {
+            handle_ed0_command(state);
+            None
+        }
+        cmd if cmd.starts_with("ed") && cmd.len() > 2 => {
+            handle_edit_command(cmd, state, lessons);
+            None
+        }
+        cmd if cmd.starts_with('z') && cmd.len() > 1 => {
+            handle_reset_command(cmd, state, lessons);
+            None
+        }
+        cmd if cmd.starts_with('r') && cmd.len() > 1 => {
+            handle_run_command(cmd, state, lessons);
+            None
+        }
+        _ => {
+            state.increment_warning();
+            None
+        }
+    }
+}
+
+fn handle_ed0_command(state: &mut AppState) {
+    match ui::edit_code_with_editor("", 0, &state.config) {
+        Ok(code) if !code.trim().is_empty() => {
+            handle_code_execution(&code, &state.config);
+        }
+        Ok(_) => {
+            println!("{} No code entered", "[info]".blue().bold());
+            ui::wait_for_enter();
+        }
+        Err(e) => {
+            ui::show_error(&format!("Edit failed: {}", e));
+            ui::wait_for_enter();
+        }
+    }
+}
+
+fn handle_edit_command(cmd: &str, state: &mut AppState, lessons: &[String]) {
+    if let Ok(block_num) = cmd[2..].parse::<usize>() {
+        let cached_blocks = executor::extract_code_blocks(&lessons[state.current_lesson]);
+        
+        if block_num > 0 && block_num <= cached_blocks.len() {
+            let block_idx = block_num - 1;
+            let current_code = state
+                .get_cached_or_original(state.current_lesson, block_idx, &cached_blocks[block_idx])
+                .to_string();
+
+            match ui::edit_code_with_editor(&current_code, block_num, &state.config) {
+                Ok(edited_code) if !edited_code.trim().is_empty() && edited_code != current_code => {
+                    state.update_code_block(state.current_lesson, block_idx, edited_code.clone());
+                    println!("{} Code block #{} updated!", "[✓]".green().bold(), block_num);
+                    handle_code_execution(&edited_code, &state.config);
+                }
+                Ok(edited_code) if !edited_code.trim().is_empty() => {
+                    println!("{} No changes made", "[info]".blue().bold());
+                    ui::wait_for_enter();
+                }
+                Ok(_) => {
+                    println!("{} No code entered", "[info]".blue().bold());
+                    ui::wait_for_enter();
+                }
+                Err(e) => {
+                    ui::show_error(&format!("Edit failed: {}", e));
+                    ui::wait_for_enter();
+                }
+            }
+        } else {
+            state.increment_warning();
+        }
+    } else {
+        state.increment_warning();
+    }
+}
+
+fn handle_reset_command(cmd: &str, state: &mut AppState, lessons: &[String]) {
+    if let Ok(block_num) = cmd[1..].parse::<usize>() {
+        let cached_blocks = executor::extract_code_blocks(&lessons[state.current_lesson]);
+        
+        if block_num > 0 && block_num <= cached_blocks.len() {
+            let block_idx = block_num - 1;
+            if state.reset_code_block(state.current_lesson, block_idx) {
+                println!("{} Reset code block #{} to original", "[✓]".green().bold(), block_num);
+            } else {
+                println!("{} Code block #{} was not modified", "[info]".blue().bold(), block_num);
+            }
+            ui::wait_for_enter();
+        } else {
+            state.increment_warning();
+        }
+    } else {
+        state.increment_warning();
+    }
+}
+
+fn handle_run_command(cmd: &str, state: &mut AppState, lessons: &[String]) {
+    if let Ok(block_num) = cmd[1..].parse::<usize>() {
+        let cached_blocks = executor::extract_code_blocks(&lessons[state.current_lesson]);
+        
+        if block_num > 0 && block_num <= cached_blocks.len() {
+            let block_idx = block_num - 1;
+            let code = state
+                .get_cached_or_original(state.current_lesson, block_idx, &cached_blocks[block_idx]);
+
+            let executable_code = executor::ensure_main_wrapper(code);
+            let result = executor::execute_code(&executable_code);
+            ui::show_execution_result(&result, code);
+        } else {
+            state.increment_warning();
+        }
+    } else {
+        state.increment_warning();
+    }
+}
+
+fn show_help() {
+    println!("\n{} Commands:", "[help]".yellow().bold());
+    println!("  {} r1, r2, r3    - Run specific code block", "[r#]".cyan().bold());
+    println!("  {} ed1, ed2, ed3 - Edit specific code block", "[ed#]".green().bold());
+    println!("  {} ed0           - Write code from scratch", "[ed0]".green().bold());
+    println!("  {} z1, z2, z3    - Reset specific code block", "[z#]".red().bold());
+
+    let cfg = config::load_config();
+    if cfg.editor.is_none() {
+        println!("\n{} No editor configured!", "[warn]".yellow().bold());
+        println!("  {} Set editor: rustlrn editor <command>", "[setup]".cyan().bold());
+        println!("  {} Example: rustlrn editor nano", "[example]".dimmed());
+    }
+}
+
+fn handle_editor_command(command: &str) {
+    println!("{} Setting editor to: {}", "[config]".cyan().bold(), command.cyan());
+
+    if !config::validate_editor(command) {
+        let cmd_name = command.split_whitespace().next().unwrap_or(command);
+        println!("{} Warning: Could not find '{}'. Please ensure it's installed.", "[warn]".yellow().bold(), cmd_name);
+        println!("{} You can still proceed, but the editor may not work.", "[info]".blue().bold());
+    }
+
+    if !config::is_blocking_editor(command) {
+        println!("{} Note: '{}' may not block the terminal.", "[info]".blue().bold(), command);
+        println!("{} For GUI editors, add --wait or -w flag.", "[hint]".yellow().bold());
+        println!("{} Example: rustlrn editor \"code --wait\"", "[hint]".yellow().bold());
+    }
+
+    let new_config = config::Config {
+        editor: Some(command.to_string()),
+    };
+
+    config::save_config(&new_config);
+    println!("{} Editor configured successfully!", "[✓]".green().bold());
+}
+
+fn handle_code_execution(initial_code: &str, config: &config::Config) {
+    let mut retry_count = 0;
+    let max_retries = 3;
+    let mut current_code = initial_code.to_string();
+
+    loop {
+        let executable_code = executor::ensure_main_wrapper(&current_code);
+        let result = executor::execute_code(&executable_code);
+
+        if result.success {
+            ui::show_execution_result(&result, &current_code);
+            break;
+        }
+
+        ui::show_execution_result(&result, &current_code);
+
+        if retry_count >= max_retries {
+            println!("\n{} Maximum retries exceeded. Please fix the code manually.", "[error]".red().bold());
+            ui::wait_for_enter();
+            break;
+        }
+
+        if !prompt_retry() {
+            println!("{} Skipping retry.", "[info]".blue().bold());
+            break;
+        }
+
+        retry_count += 1;
+
+        match ui::edit_code_with_editor(&current_code, 0, config) {
+            Ok(new_code) if !new_code.trim().is_empty() && new_code != current_code => {
+                current_code = new_code;
+            }
+            Ok(_) => {
+                println!("{} No changes made. Exiting.", "[info]".blue().bold());
+                break;
+            }
+            Err(e) => {
+                ui::show_error(&format!("Edit failed: {}", e));
+                break;
+            }
+        }
+    }
+}
+
+fn prompt_retry() -> bool {
+    println!("\n{} Edit again? (y/n)", "[question]".yellow().bold());
+    let mut response = String::new();
+    io::stdin().read_line(&mut response).unwrap();
+    response.trim().to_lowercase() == "y"
 }
